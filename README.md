@@ -1,2 +1,26 @@
-# aionanomsg
-Asyncio Nanomsg library on top of nnpy
+aionanomsg
+========
+Asyncio nanomsg library.
+
+
+About
+--------
+Layers on top of, https://github.com/mayfield/aionanomsg.git
+
+
+Requirements
+--------
+* nnpy Python Library
+    * cffi (>=1.8.3)
+    * nanomsg (>=1.0)
+
+
+Installation
+--------
+    python3 ./setup.py build
+    python3 ./setup.py install
+
+
+Compatibility
+--------
+* Python 3.5+
