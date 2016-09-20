@@ -5,7 +5,7 @@ Asyncio nanomsg library.
 
 About
 --------
-Layers on top of, https://github.com/mayfield/aionanomsg.git
+Layers on top of, https://github.com/nanomsg/nnpy.git
 
 
 Requirements
