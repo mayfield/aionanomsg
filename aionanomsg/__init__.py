@@ -9,25 +9,27 @@ import nnpy
 logger = logging.getLogger('aionanomsg')
 
 
-bgrecv = itertools.count()
 fgrecv = itertools.count()
+bgrecv = itertools.count()
+bgrecv_atonce = itertools.count()
+fgsend = itertools.count()
 bgsend = itertools.count()
 bgsend_atonce = itertools.count()
-fgsend = itertools.count()
 
 
 class Socket(nnpy.Socket):
 
-    def __init__(self, nn_type, family=nnpy.AF_SP, recvq_maxsize=1,
-                 sendq_maxsize=1, loop=None):
+    def __init__(self, nn_type, family=nnpy.AF_SP, recvq_maxsize=500,
+                 sendq_maxsize=500, loop=None):
         if loop is None:
             self._loop = asyncio.get_event_loop()
         self._recv_queue = asyncio.Queue(recvq_maxsize, loop=self._loop)
         self._send_queue = collections.deque(maxlen=sendq_maxsize) # asyncio.Queue(sendq_maxsize, loop=self._loop)
         self._has_recv_handler = False
         self._has_send_handler = False
+        self._recv_fd = None
+        self._send_fd = None
         super().__init__(family, nn_type)
-        self._fd = self.getsockopt(nnpy.SOL_SOCKET, nnpy.RCVFD)
 
     def _create_future(self):
         try:
@@ -55,30 +57,43 @@ class Socket(nnpy.Socket):
 
     def maybe_add_send_handler(self):
         if not self._has_send_handler:
-            self._loop.add_writer(self._fd, self._writable_event)
+            if self._send_fd is None:
+                self._send_fd = self.getsockopt(nnpy.SOL_SOCKET, nnpy.SNDFD)
+            # Even the send fd signals via read events.
+            self._loop.add_reader(self._send_fd, self._sendable_event)
             self._has_send_handler = True
 
     def maybe_add_recv_handler(self):
         if not self._has_recv_handler:
-            self._loop.add_reader(self._fd, self._readable_event)
+            if self._recv_fd is None:
+                self._recv_fd = self.getsockopt(nnpy.SOL_SOCKET, nnpy.RCVFD)
+            self._loop.add_reader(self._recv_fd, self._recvable_event)
             self._has_recv_handler = True
+        else:
+            logger.warning("look it's already registered!")
 
     def remove_send_handler(self):
-        self._loop.remove_writer(self._fd)
-        self._has_send_handler = False
+        if self._has_send_handler:
+            self._loop.remove_writer(self._send_fd)
+            self._has_send_handler = False
 
-    async def send(self, data):
-        return self.send_nowait(data)
+    def remove_recv_handler(self):
+        if self._has_recv_handler:
+            self._loop.remove_reader(self._recv_fd)
+            self._has_recv_handler = False
 
-    def send_nowait(self, data):
+    def send(self, data):
+        f = self._create_future()
         try:
             self._send(data)
-            next(fgsend)
         except BlockingIOError:
             f = self._create_future()
             self._send_queue.append((f, data))
             self.maybe_add_send_handler()
-            return f
+        else:
+            next(fgsend)
+            f.set_result(None)
+        return f
 
     async def recv(self):
         q = self._recv_queue
@@ -90,22 +105,32 @@ class Socket(nnpy.Socket):
                 next(fgrecv)
                 return data
             except BlockingIOError:
+                logger.warning("RECV BLOCKED, wait!")
                 self.maybe_add_recv_handler()
                 data = await q.get()
                 q.task_done()
                 return data
 
-    def _readable_event(self):
-        if self._recv_queue.full():
-            self._loop.remove_reader(self._fd)
-            self._has_recv_handler = False
-            logger.error("QUEUE FULL: removing read handler")
-        else:
-            logger.error("BG FILL: via read handler")
-            next(bgrecv)
-            self._recv_queue.put_nowait(self._recv())
+    def _recvable_event(self):
+        i = 0
+        while True:
+            if i:
+                next(bgrecv_atonce)
+            try:
+                self._recv_queue.put_nowait(self._recv())
+            except BlockingIOError:
+                logger.warning("RECV DRAINED to BLOCK: %d" % i)
+                self.remove_recv_handler()
+                break
+            except asyncio.QueueFull:
+                logger.error("QUEUE FULL: removing recv handler")
+                self.remove_recv_handler()
+                break
+            else:
+                logger.error("BG FILL: via recv handler")
+                next(bgrecv)
 
-    def _writable_event(self):
+    def _sendable_event(self):
         i = 0
         while True:
             if i:
@@ -114,14 +139,14 @@ class Socket(nnpy.Socket):
                 f, data = self._send_queue.popleft()
             except IndexError:
                 self.remove_send_handler()
-                logger.info("Drained to empty!")
+                logger.info("Sender Drained to empty!")
                 return
             else:
                 try:
                     self._send(data)
                 except BlockingIOError:
                     self._send_queue.appendleft((f, data))
-                    logger.warning("Drained to BLOCK!")
+                    logger.warning("Sender Drained to BLOCK!")
                     return
                 else:
                     next(bgsend)
@@ -129,9 +154,6 @@ class Socket(nnpy.Socket):
             i += 1
 
     def close(self):
-        if self._has_read_handler:
-            self._loop.remove_reader(self._fd)
-            self._has_read_handler = False
         self.remove_recv_handler()
         self.remove_send_handler()
         super().close()
