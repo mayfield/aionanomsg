@@ -27,11 +27,6 @@ setup(
     packages=find_packages(),
     test_suite='test',
     install_requires=requirements,
-    # requirements refs a fake version of nnpy that's not deployed yet.
-    # make that fake version available by specific commit here.
-    dependency_links=['http://github.com/nanomsg/nnpy/tarball/'
-                      '5269d2621d420a0623a5cdd61d56baf3d98cb8e9'
-                      '#egg=nnpy-1.2.0.999'],
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
