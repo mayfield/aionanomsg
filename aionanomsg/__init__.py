@@ -2,40 +2,32 @@
 import asyncio
 import collections
 import errno
-import itertools
 import logging
 import nnpy
 
 logger = logging.getLogger('aionanomsg')
 
 
-fgrecv = itertools.count()
-bgrecv = itertools.count()
-bgrecv_atonce = itertools.count()
-fgsend = itertools.count()
-bgsend = itertools.count()
-bgsend_atonce = itertools.count()
-
-
 class Socket(nnpy.Socket):
 
-    def __init__(self, nn_type, family=nnpy.AF_SP, recvq_maxsize=500,
-                 sendq_maxsize=500, loop=None):
+    def __init__(self, nn_type, family=nnpy.AF_SP, recvq_maxsize=1000,
+                 sendq_maxsize=1000, loop=None):
         if loop is None:
             self._loop = asyncio.get_event_loop()
-        self._recv_queue = asyncio.Queue(recvq_maxsize, loop=self._loop)
-        self._send_queue = collections.deque(maxlen=sendq_maxsize) # asyncio.Queue(sendq_maxsize, loop=self._loop)
+        self.recvq_maxsize = recvq_maxsize
+        self.sendq_maxsize = sendq_maxsize
+        self._recv_queue = collections.deque()
+        self._send_queue = collections.deque()
         self._has_recv_handler = False
         self._has_send_handler = False
         self._recv_fd = None
         self._send_fd = None
-        super().__init__(family, nn_type)
-
-    def _create_future(self):
+        self._recv_waiter = None
         try:
-            return self._loop.create_future()
+            self._create_future = self._loop.create_future
         except AttributeError:
-            return asyncio.Future(loop=self._loop)
+            self._create_future = lambda: asyncio.Future(loop=self._loop)
+        super().__init__(family, nn_type)
 
     def _send(self, data):
         try:
@@ -63,14 +55,12 @@ class Socket(nnpy.Socket):
             self._loop.add_reader(self._send_fd, self._sendable_event)
             self._has_send_handler = True
 
-    def maybe_add_recv_handler(self):
-        if not self._has_recv_handler:
-            if self._recv_fd is None:
-                self._recv_fd = self.getsockopt(nnpy.SOL_SOCKET, nnpy.RCVFD)
-            self._loop.add_reader(self._recv_fd, self._recvable_event)
-            self._has_recv_handler = True
-        else:
-            logger.warning("look it's already registered!")
+    def add_recv_handler(self):
+        assert not self._has_recv_handler
+        if self._recv_fd is None:
+            self._recv_fd = self.getsockopt(nnpy.SOL_SOCKET, nnpy.RCVFD)
+        self._loop.add_reader(self._recv_fd, self._recvable_event)
+        self._has_recv_handler = True
 
     def remove_send_handler(self):
         if self._has_send_handler:
@@ -82,76 +72,61 @@ class Socket(nnpy.Socket):
             self._loop.remove_reader(self._recv_fd)
             self._has_recv_handler = False
 
-    def send(self, data):
-        f = self._create_future()
+    async def send(self, data):
         try:
             self._send(data)
         except BlockingIOError:
-            f = self._create_future()
-            self._send_queue.append((f, data))
-            self.maybe_add_send_handler()
-        else:
-            next(fgsend)
-            f.set_result(None)
-        return f
+            if len(self._send_queue) >= self.sendq_maxsize:
+                raise IOError('send_queue overflow: %d' % self.sendq_maxsize)
+            else:
+                f = self._create_future()
+                self._send_queue.append((f, data))
+                self.maybe_add_send_handler()
+                await f
 
     async def recv(self):
-        q = self._recv_queue
-        if not q.empty():
-            return q.get_nowait()
+        if self._recv_queue:
+            return self._recv_queue.popleft()
         else:
             try:
-                data = self._recv()
-                next(fgrecv)
-                return data
+                return self._recv()
             except BlockingIOError:
-                logger.warning("RECV BLOCKED, wait!")
-                self.maybe_add_recv_handler()
-                data = await q.get()
-                q.task_done()
-                return data
+                f = self._create_future()
+                assert not self._recv_waiter, "recv() already called"
+                self._recv_waiter = f
+                self.add_recv_handler()
+                await f
+                return f.result()
 
     def _recvable_event(self):
-        i = 0
         while True:
-            if i:
-                next(bgrecv_atonce)
             try:
-                self._recv_queue.put_nowait(self._recv())
+                data = self._recv()
             except BlockingIOError:
-                logger.warning("RECV DRAINED to BLOCK: %d" % i)
                 self.remove_recv_handler()
                 break
-            except asyncio.QueueFull:
-                logger.error("QUEUE FULL: removing recv handler")
-                self.remove_recv_handler()
-                break
+            if self._recv_waiter is not None:
+                self._recv_waiter.set_result(data)
+                self._recv_waiter = None
             else:
-                logger.error("BG FILL: via recv handler")
-                next(bgrecv)
+                self._recv_queue.append(data)
+                if len(self._recv_queue) >= self.recvq_maxsize:
+                    self.remove_recv_handler()
+                    break
 
     def _sendable_event(self):
-        i = 0
         while True:
-            if i:
-                next(bgsend_atonce)
-            try:
-                f, data = self._send_queue.popleft()
-            except IndexError:
+            if not self._send_queue:
                 self.remove_send_handler()
-                logger.info("Sender Drained to empty!")
+                return
+            f, data = self._send_queue.popleft()
+            try:
+                self._send(data)
+            except BlockingIOError:
+                self._send_queue.appendleft((f, data))
                 return
             else:
-                try:
-                    self._send(data)
-                except BlockingIOError:
-                    self._send_queue.appendleft((f, data))
-                    logger.warning("Sender Drained to BLOCK!")
-                    return
-                else:
-                    next(bgsend)
-                    f.set_result(None)
-            i += 1
+                f.set_result(None)
 
     def close(self):
         self.remove_recv_handler()
