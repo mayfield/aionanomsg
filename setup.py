@@ -1,4 +1,5 @@
 from setuptools import setup, find_packages
+from distutils.core import Extension
 
 README = 'README.md'
 
@@ -18,7 +19,14 @@ def long_desc():
 setup(
     name='aionanomsg',
     version='1',
-    description='Asyncio lib for nanomsg (using nnpy)',
+    ext_modules=[
+        Extension('aionanomsg._nanomsg',
+                  sources=['aionanomsg/_nanomsg.c'],
+                  libraries=['nanomsg'],
+                  library_dirs=['/usr/local/lib'],
+        ),
+    ],
+    description='Asyncio lib for nanomsg (with c bindings)',
     author='Justin Mayfield',
     author_email='tooker@gmail.com',
     url='https://github.com/mayfield/aionanomsg/',
