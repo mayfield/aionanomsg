@@ -1,5 +1,5 @@
 """
-AIONanomsg socket library.
+aionanomsg socket library.
 
 This is probably what you're looking for.
 """
@@ -10,6 +10,7 @@ from . import _nanomsg, symbols
 
 
 class NNSocket(_nanomsg.NNSocket):
+    """ Public interface for nanomsg operations. """
 
     def __init__(self, nn_type, domain=_nanomsg.AF_SP, loop=None):
         if loop is None:
@@ -69,7 +70,7 @@ class NNSocket(_nanomsg.NNSocket):
         finally:
             self._sending = False
 
-    async def recv(self, _flags=_nanomsg.NN_DONTWAIT):
+    async def recv(self):
         assert not self._receiving, 'recv() is already running'
         self._receiving = True
         try:
@@ -92,9 +93,7 @@ class NNSocket(_nanomsg.NNSocket):
         self.shutdown()
 
     def _recvable_event(self):
-        if self._recv_waiter is None:
-            print("slow recv remove!")
-            return
+        assert self._recv_waiter is not None, 'spurious recv event'
         waiter = self._recv_waiter
         self._recv_waiter = None
         try:
@@ -103,9 +102,7 @@ class NNSocket(_nanomsg.NNSocket):
             waiter.set_exception(e)
 
     def _sendable_event(self):
-        if self._send_waiter is None:
-            print("slow remove!")
-            return
+        assert self._send_waiter is not None, 'spurious send event'
         waiter = self._send_waiter
         self._send_waiter = None
         try:
