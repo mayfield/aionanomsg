@@ -5,30 +5,20 @@ This is probably what you're looking for.
 """
 
 import asyncio
-import collections
-import logging
 import warnings
 from . import _nanomsg, symbols
-
-logger = logging.getLogger('aionanomsg')
 
 
 class NNSocket(_nanomsg.NNSocket):
 
-    def __init__(self, nn_type, domain=_nanomsg.AF_SP, recvq_maxsize=1000,
-                 sendq_maxsize=1000, loop=None):
+    def __init__(self, nn_type, domain=_nanomsg.AF_SP, loop=None):
         if loop is None:
             self._loop = asyncio.get_event_loop()
-        self.recvq_maxsize = recvq_maxsize
-        self.sendq_maxsize = sendq_maxsize
-        self._recv_queue = collections.deque()
-        self._send_queue = collections.deque()
-        self._has_recv_handler = False
-        self._has_send_handler = False
+        self._sending = False
+        self._receiving = False
+        self._send_waiter = None
         self._recv_waiter = None
         self._eids = []
-        self._closing = False
-        self._closed = False
         try:
             self._create_future = self._loop.create_future
         except AttributeError:
@@ -36,9 +26,7 @@ class NNSocket(_nanomsg.NNSocket):
         super().__init__(domain, nn_type)
 
     def __del__(self):
-        if self._eids:
-            warnings.warn("NNSocket not properly closed")
-            self.shutdown()
+        self.shutdown()
 
     @property
     def recv_poll_fd(self):
@@ -68,34 +56,28 @@ class NNSocket(_nanomsg.NNSocket):
 
     def getsockopt(self, level, option):
         assert isinstance(level, symbols.NNSymbol), 'level must be NNSymbol'
-        assert isinstance(option, symbols.NNSymbol), 'level must be NNSymbol'
+        assert isinstance(option, symbols.NNSymbol), 'option must be NNSymbol'
         return self._nn_getsockopt(level, option, option.type)
 
     async def send(self, data):
+        assert not self._sending, 'send() is already running'
+        self._sending = True
         try:
             self._send(data)
         except BlockingIOError:
-            if len(self._send_queue) >= self.sendq_maxsize:
-                raise IOError('send_queue overflow: %d' % self.sendq_maxsize)
-            else:
-                f = self._create_future()
-                self._send_queue.append((f, data))
-                self._maybe_add_send_handler()
-                await f
+            await self._send_on_ready(data)
+        finally:
+            self._sending = False
 
-    async def recv(self):
-        if self._recv_queue:
-            return self._recv_queue.popleft()
-        else:
-            try:
-                return self._recv()
-            except BlockingIOError:
-                f = self._create_future()
-                assert not self._recv_waiter, "recv() already called"
-                self._recv_waiter = f
-                self._add_recv_handler()
-                await f
-                return f.result()
+    async def recv(self, _flags=_nanomsg.NN_DONTWAIT):
+        assert not self._receiving, 'recv() is already running'
+        self._receiving = True
+        try:
+            return self._recv()
+        except BlockingIOError:
+            return await self._recv_on_ready()
+        finally:
+            self._receiving = False
 
     def shutdown(self):
         """ Tell nanomsg core to shutdown our connections. """
@@ -107,41 +89,29 @@ class NNSocket(_nanomsg.NNSocket):
                               type(e).__name__, e))
 
     def close(self):
-        self._closing = True
-        self._remove_recv_handler()
-        self._remove_send_handler()
         self.shutdown()
-        self._closed = True
 
     def _recvable_event(self):
-        while True:
-            try:
-                data = self._recv()
-            except BlockingIOError:
-                self._remove_recv_handler()
-                break
-            if self._recv_waiter is not None:
-                self._recv_waiter.set_result(data)
-                self._recv_waiter = None
-            else:
-                self._recv_queue.append(data)
-                if len(self._recv_queue) >= self.recvq_maxsize:
-                    self._remove_recv_handler()
-                    break
+        if self._recv_waiter is None:
+            print("slow recv remove!")
+            return
+        waiter = self._recv_waiter
+        self._recv_waiter = None
+        try:
+            waiter.set_result(self._recv())
+        except Exception as e:
+            waiter.set_exception(e)
 
     def _sendable_event(self):
-        while True:
-            if not self._send_queue:
-                self._remove_send_handler()
-                return
-            f, data = self._send_queue.popleft()
-            try:
-                self._send(data)
-            except BlockingIOError:
-                self._send_queue.appendleft((f, data))
-                return
-            else:
-                f.set_result(None)
+        if self._send_waiter is None:
+            print("slow remove!")
+            return
+        waiter = self._send_waiter
+        self._send_waiter = None
+        try:
+            waiter.set_result(self._send(waiter.data))
+        except Exception as e:
+            waiter.set_exception(e)
 
     def _send(self, data, _flags=_nanomsg.NN_DONTWAIT):
         return self._nn_send(data, _flags)
@@ -149,23 +119,25 @@ class NNSocket(_nanomsg.NNSocket):
     def _recv(self, _flags=_nanomsg.NN_DONTWAIT):
         return self._nn_recv(_flags)
 
-    def _maybe_add_send_handler(self):
-        if not self._has_send_handler:
-            # Even the send fd signals via read events.
-            self._loop.add_reader(self.send_poll_fd, self._sendable_event)
-            self._has_send_handler = True
+    def _send_on_ready(self, data):
+        """ Wait for socket to be writable before sending. """
+        assert self._send_waiter is None, 'send_waiter already exists'
+        self._send_waiter = f = self._create_future()
+        f.data = data
+        # Even the send fd notifies via read events.
+        self._loop.add_reader(self.send_poll_fd, self._sendable_event)
+        f.add_done_callback(self._remove_send_handler)
+        return f
 
-    def _add_recv_handler(self):
-        assert not self._has_recv_handler
+    def _recv_on_ready(self):
+        assert self._recv_waiter is None, 'recv_waiter already exists'
+        self._recv_waiter = f =self._create_future()
         self._loop.add_reader(self.recv_poll_fd, self._recvable_event)
-        self._has_recv_handler = True
+        f.add_done_callback(self._remove_recv_handler)
+        return f
 
-    def _remove_send_handler(self):
-        if self._has_send_handler:
-            self._loop.remove_writer(self.send_poll_fd)
-            self._has_send_handler = False
+    def _remove_send_handler(self, f):
+        self._loop.remove_reader(self.send_poll_fd)
 
-    def _remove_recv_handler(self):
-        if self._has_recv_handler:
-            self._loop.remove_reader(self.recv_poll_fd)
-            self._has_recv_handler = False
+    def _remove_recv_handler(self, f):
+        self._loop.remove_reader(self.recv_poll_fd)

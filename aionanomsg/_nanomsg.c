@@ -77,6 +77,7 @@ static PyObject * NNSocket__nn_send(NNSocket *self, PyObject *args) {
         Py_END_ALLOW_THREADS
         if (nbytes != -1 || errno != EINTR || PyErr_CheckSignals())
             break;
+        return NULL;
     }
     PyBuffer_Release(&data);
     if (nbytes == -1) {
@@ -106,6 +107,8 @@ static PyObject * NNSocket__nn_recv(NNSocket *self, PyObject *args) {
         Py_END_ALLOW_THREADS
         if (nbytes != -1 || errno != EINTR || PyErr_CheckSignals())
             break;
+        PyErr_SetNone(PyExc_ValueError);
+        return NULL;
     }
     if (nbytes == -1) {
         if (errno == EAGAIN) {
