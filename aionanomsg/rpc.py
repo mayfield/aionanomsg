@@ -5,7 +5,7 @@ RPC facilities built on top of core nanomsg functions.
 import asyncio
 import logging
 import traceback
-import umsgpack
+import msgpack
 from . import socket
 
 logger = logging.getLogger('aionanomsg.rpc')
@@ -13,10 +13,10 @@ logger = logging.getLogger('aionanomsg.rpc')
 
 class RPCSocket(socket.NNSocket):
 
-    async def send(self, value, _dumps=umsgpack.dumps):
+    async def send(self, value, _dumps=msgpack.dumps):
         await super().send(_dumps(value))
 
-    async def recv(self, _loads=umsgpack.loads):
+    async def recv(self, _loads=msgpack.loads):
         return _loads(await super().recv())
 
 
