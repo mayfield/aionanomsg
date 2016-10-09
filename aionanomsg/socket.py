@@ -118,7 +118,8 @@ class NNSocket(_nanomsg.NNSocket):
 
     def _send_on_ready(self, data):
         """ Wait for socket to be writable before sending. """
-        assert self._send_waiter is None, 'send_waiter already exists'
+        assert self._send_waiter is None or self._send_waiter.cancelled(), \
+            'send_waiter already exists'
         self._send_waiter = f = self._create_future()
         f.data = data
         # Even the send fd notifies via read events.
@@ -127,8 +128,9 @@ class NNSocket(_nanomsg.NNSocket):
         return f
 
     def _recv_on_ready(self):
-        assert self._recv_waiter is None, 'recv_waiter already exists'
-        self._recv_waiter = f =self._create_future()
+        assert self._recv_waiter is None or self._recv_waiter.cancelled(), \
+            'recv_waiter already exists'
+        self._recv_waiter = f = self._create_future()
         self._loop.add_reader(self.recv_poll_fd, self._recvable_event)
         f.add_done_callback(self._remove_recv_handler)
         return f
