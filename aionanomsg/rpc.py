@@ -13,11 +13,17 @@ logger = logging.getLogger('aionanomsg.rpc')
 
 class RPCSocket(socket.NNSocket):
 
-    async def send(self, value, _dumps=msgpack.dumps):
-        await super().send(_dumps(value))
+    def encode(self, value, _dumps=msgpack.packb):
+        return _dumps(value, use_bin_type=True)
 
-    async def recv(self, _loads=msgpack.loads):
-        return _loads(await super().recv())
+    def decode(self, data, encoding='utf-8', _loads=msgpack.unpackb):
+        return _loads(data, encoding=encoding)
+
+    async def send(self, value):
+        await super().send(self.encode(value))
+
+    async def recv(self):
+        return self.decode(await super().recv())
 
 
 class RemoteException(Exception):
@@ -61,13 +67,12 @@ class RPCServer(RPCSocket):
                                                             loop=self._loop)
             except asyncio.TimeoutError:
                 continue
-            # TODO: Define keyerror behavior 
-            coro = self._calls[call]
             resp = {
                 "success": True,
                 "data": None
             }
             try:
+                coro = self._calls[call]
                 resp['data'] = await coro(*args, **kwargs)
             except Exception as e:
                 tb = traceback.format_exc()
