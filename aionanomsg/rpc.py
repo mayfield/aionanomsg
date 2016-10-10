@@ -17,7 +17,7 @@ class RPCSocket(socket.NNSocket):
         return _dumps(value, use_bin_type=True)
 
     def decode(self, data, encoding='utf-8', _loads=msgpack.unpackb):
-        return _loads(data, encoding=encoding)
+        return _loads(data, encoding=encoding, use_list=False)
 
     async def send(self, value):
         await super().send(self.encode(value))
