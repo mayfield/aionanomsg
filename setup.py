@@ -18,7 +18,7 @@ def long_desc():
 
 setup(
     name='aionanomsg',
-    version='1',
+    version='1.1',
     ext_modules=[
         Extension('aionanomsg._nanomsg',
                   sources=['aionanomsg/_nanomsg.c'],
