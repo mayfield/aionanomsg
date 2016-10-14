@@ -85,7 +85,17 @@ class RPCServer(RPCSocket):
                     }
                 })
             finally:
-                await self.send(resp)
+                try:
+                    await self.send(resp)
+                except Exception as e:
+                    logger.exception("Unhandled RPC Error")
+                    await self.send({
+                        "success": False,
+                        "exception": {
+                            "type": "internal",
+                            "message": "rpc error"
+                        }
+                    })
         self._stopped.set()
 
     def stop(self):
