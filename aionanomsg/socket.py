@@ -96,19 +96,21 @@ class NNSocket(_nanomsg.NNSocket):
         assert self._recv_waiter is not None, 'spurious recv event'
         waiter = self._recv_waiter
         self._recv_waiter = None
-        try:
-            waiter.set_result(self._recv())
-        except Exception as e:
-            waiter.set_exception(e)
+        if not waiter.cancelled():
+            try:
+                waiter.set_result(self._recv())
+            except Exception as e:
+                waiter.set_exception(e)
 
     def _sendable_event(self):
         assert self._send_waiter is not None, 'spurious send event'
         waiter = self._send_waiter
         self._send_waiter = None
-        try:
-            waiter.set_result(self._send(waiter.data))
-        except Exception as e:
-            waiter.set_exception(e)
+        if not waiter.cancelled():
+            try:
+                waiter.set_result(self._send(waiter.data))
+            except Exception as e:
+                waiter.set_exception(e)
 
     def _send(self, data, _flags=_nanomsg.NN_DONTWAIT):
         return self._nn_send(data, _flags)
