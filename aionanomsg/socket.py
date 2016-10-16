@@ -93,7 +93,9 @@ class NNSocket(_nanomsg.NNSocket):
         self.shutdown()
 
     def _recvable_event(self):
-        assert self._recv_waiter is not None, 'spurious recv event'
+        if self._recv_waiter is None:
+            # Under load remove_reader can fall behind another event.
+            return
         waiter = self._recv_waiter
         self._recv_waiter = None
         if not waiter.cancelled():
@@ -103,7 +105,9 @@ class NNSocket(_nanomsg.NNSocket):
                 waiter.set_exception(e)
 
     def _sendable_event(self):
-        assert self._send_waiter is not None, 'spurious send event'
+        if self._send_waiter is None:
+            # Under load remove_reader can fall behind another event.
+            return
         waiter = self._send_waiter
         self._send_waiter = None
         if not waiter.cancelled():
