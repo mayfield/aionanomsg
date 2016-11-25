@@ -1,32 +1,22 @@
 """
 RPC facilities built on top of core nanomsg functions.
-"""
+
+This facility is based on PUB/SUB sockets as a means for maximum flexibility.
+Direct 1:1 RPC is of course perfectly fine but the comms can easily extend
+to multiple peers without use of a broker. """
 
 import asyncio
 import logging
 import traceback
 import msgpack
-from . import socket
+from . import socket, pubsub
 
 logger = logging.getLogger('aionanomsg.rpc')
 
 
-class RPCSocket(socket.NNSocket):
-
-    def encode(self, value, _dumps=msgpack.packb):
-        return _dumps(value, use_bin_type=True)
-
-    def decode(self, data, encoding='utf-8', _loads=msgpack.unpackb):
-        return _loads(data, encoding=encoding, use_list=False)
-
-    async def send(self, value):
-        await super().send(self.encode(value))
-
-    async def recv(self):
-        return self.decode(await super().recv())
-
-
 class RemoteException(Exception):
+    """ Encapsulates an exception that took place on the remote end of an RPC
+    call. """
 
     def __init__(self, type=None, message=None, traceback=None):
         self.type = type
@@ -38,21 +28,40 @@ class RemoteException(Exception):
         return '<%s %s(%s)>' % (type(self).__name__, self.type, self.message)
 
 
-class RPCServer(RPCSocket):
+class Node(object):
+    """ This serves as both caller and listener for RPC. """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, peers=None, bind_url='tcp://0.0.0.0:1978'):
         self._stopping = False
         self._stopped = asyncio.Event(loop=self._loop)
         self._calls = {}
+        self._peers = set(peers or ())
 
-    def add_call(self, coro_func, name=None):
-        if name is None:
-            name = coro_func.__name__
-        assert name not in self._calls
-        self._calls[name] = coro_func
+    def _encode(self, value, _dumps=msgpack.packb):
+        return _dumps(value, use_bin_type=True)
 
-    def remove_call(self, func_or_name):
+    def _decode(self, data, encoding='utf-8', _loads=msgpack.unpackb):
+        return _loads(data, encoding=encoding, use_list=False)
+
+    async def _send(self, value):
+        await super().send(self.encode(value))
+
+    async def _recv(self):
+        return self.decode(await super().recv())
+
+    def bind_call(self, channel:str, call):
+        """ Associate a callable (function or coro function) with a channel.
+        The channel name can be any string to identify how other callers can
+        reach the callable.  For 1:1 communication the channel should be
+        unique to the entire cluster;  An exercise left to the user. """
+        assert channel not in self._calls
+        self._calls[name] = call
+        if not asyncio.iscoroutinefunction(call):
+            assert callable(call), "
+                raise 
+        self.sub.subscribe(channel, call)
+
+    def unbind_call(self, func_or_name):
         for name, func in self._calls.items():
             if func_or_name in (name, func):
                 del self._calls[name]
@@ -67,6 +76,7 @@ class RPCServer(RPCSocket):
                                                             loop=self._loop)
             except asyncio.TimeoutError:
                 continue
+            with embed_rpc_response(self._calls[call], args, kwargs)
             resp = {
                 "success": True,
                 "data": None
@@ -105,7 +115,7 @@ class RPCServer(RPCSocket):
         await self._stopped.wait()
 
 
-class RPCClient(RPCSocket):
+class RPCClient(SerializationMixin, socket.NNSocket):
 
     async def call(self, name, *args, **kwargs):
         await self.send((name, args, kwargs))
