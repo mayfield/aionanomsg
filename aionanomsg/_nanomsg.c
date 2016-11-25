@@ -182,14 +182,14 @@ static PyObject * NNSocket__nn_setsockopt(NNSocket *self, PyObject *args) {
         return NULL;
     if (type == NN_TYPE_INT) {
         intval = PyLong_AsLong(value);
-        optval = &intval;
-        optsize = sizeof(intval);
-        /* check for overflow */
         if (PyErr_Occurred()) {
             return NULL;
         }
+        optval = &intval;
+        optsize = sizeof(intval);
     } else if (type == NN_TYPE_STR) {
-        strptr = PyBytes_AsString(value);
+        if ((strptr = PyBytes_AsString(value)) == NULL)
+            return NULL;
         optval = strptr;
         optsize = PyBytes_Size(value);
     } else if (type == NN_TYPE_NONE) {

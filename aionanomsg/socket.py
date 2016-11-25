@@ -60,6 +60,11 @@ class NNSocket(_nanomsg.NNSocket):
         assert isinstance(option, symbols.NNSymbol), 'option must be NNSymbol'
         return self._nn_getsockopt(level, option, option.type)
 
+    def setsockopt(self, level, option, value):
+        assert isinstance(level, symbols.NNSymbol), 'level must be NNSymbol'
+        assert isinstance(option, symbols.NNSymbol), 'option must be NNSymbol'
+        return self._nn_setsockopt(level, option, option.type, value)
+
     async def send(self, data):
         assert not self._sending, 'send() is already running'
         self._sending = True
