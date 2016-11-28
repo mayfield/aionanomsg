@@ -29,6 +29,10 @@ class Subscriber(socket.NNSocket):
             self._listeners[topic] = []
         self._listeners[topic].append(listener)
 
+    def unsubscribe(self, topic:str, listener):
+        topic = topic.encode()
+        self._listeners[topic].remove(listener)
+
     def start(self):
         """ Start handling published data to our topics. """
         assert not self._stopping

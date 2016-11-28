@@ -7,8 +7,9 @@ to multiple peers without use of a broker. """
 
 import asyncio
 import logging
-import traceback
 import msgpack
+import traceback
+import uuid
 from . import socket, pubsub
 
 logger = logging.getLogger('aionanomsg.rpc')
@@ -28,14 +29,27 @@ class RemoteException(Exception):
         return '<%s %s(%s)>' % (type(self).__name__, self.type, self.message)
 
 
-class Node(object):
-    """ This serves as both caller and listener for RPC. """
+class RPCClient(object):
+    """ Use an instance of this to make RPCs to RPCServer servers. """
 
-    def __init__(self, peers=None, bind_url='tcp://0.0.0.0:1978'):
+    def __init__(self, peers=None, bind_url='tcp://0.0.0.0:1978',
+                 connect_url=None, loop=None):
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        self._loop = loop
+        self._caller = pubsub.Publisher()
+        if connect_url is None:
+            self._caller.bind(bind_url)
+        else:
+            self._caller.connect(connect_url)
+        self._responder = pubsub.Subscriber()
         self._stopping = False
         self._stopped = asyncio.Event(loop=self._loop)
-        self._calls = {}
         self._peers = set(peers or ())
+        self.uuid = uuid.uuid1()
+        self.sub.subscribe('node.resp.%s' % self.uuid, self.response_handler)
+        for x in self._peers:
+            self._sub.connect(x)
 
     def _encode(self, value, _dumps=msgpack.packb):
         return _dumps(value, use_bin_type=True)
@@ -43,31 +57,39 @@ class Node(object):
     def _decode(self, data, encoding='utf-8', _loads=msgpack.unpackb):
         return _loads(data, encoding=encoding, use_list=False)
 
-    async def _send(self, value):
-        await super().send(self.encode(value))
+    async def call(self, channel, msg):
+        envelope = {
+            "from": self.uuid,
+            "msg": msg
+        }
+        await self._pub.publish(channel, self.encode(envelope))
+        resp = await self.recv()
+        if resp['success']:
+            return resp['data']
+        else:
+            raise RemoteException(**resp['exception'])
 
     async def _recv(self):
         return self.decode(await super().recv())
 
-    def bind_call(self, channel:str, call):
+    async def response_handler(self, envelope):
+        import pdb
+        pdb.set_trace()
+
+    def bind_call(self, channel, call):
         """ Associate a callable (function or coro function) with a channel.
         The channel name can be any string to identify how other callers can
         reach the callable.  For 1:1 communication the channel should be
         unique to the entire cluster;  An exercise left to the user. """
         assert channel not in self._calls
-        self._calls[name] = call
-        if not asyncio.iscoroutinefunction(call):
-            assert callable(call), "
-                raise 
-        self.sub.subscribe(channel, call)
+        if not callable(call):
+            raise TypeError("Uncallable argument: `call`")
+        self.sub.subscribe(channel)
+        self._calls[channel] = call
 
-    def unbind_call(self, func_or_name):
-        for name, func in self._calls.items():
-            if func_or_name in (name, func):
-                del self._calls[name]
-                break
-        else:
-            raise ValueError('call not found: %s' % func_or_name)
+    def unbind_call(self, channel):
+        call = self._calls.pop(channel)
+        self.sub.unsubscribe(channel, call)
 
     async def start(self):
         while not self._stopping:
@@ -76,7 +98,6 @@ class Node(object):
                                                             loop=self._loop)
             except asyncio.TimeoutError:
                 continue
-            with embed_rpc_response(self._calls[call], args, kwargs)
             resp = {
                 "success": True,
                 "data": None
@@ -115,12 +136,105 @@ class Node(object):
         await self._stopped.wait()
 
 
-class RPCClient(SerializationMixin, socket.NNSocket):
+class Node(object):
+    """ This serves as both caller and listener for RPC. """
 
-    async def call(self, name, *args, **kwargs):
-        await self.send((name, args, kwargs))
+    def __init__(self, peers=None, bind_url='tcp://0.0.0.0:1978', loop=None):
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        self._loop = loop
+        self._pub = pubsub.Publisher()
+        self._pub.bind(bind_url)
+        self._sub = pubsub.Subscriber()
+        self._stopping = False
+        self._stopped = asyncio.Event(loop=self._loop)
+        self._calls = {}
+        self._peers = set(peers or ())
+        self.uuid = uuid.uuid1()
+        self.sub.subscribe('node.resp.%s' % self.uuid, self.response_handler)
+        for x in self._peers:
+            self._sub.connect(x)
+
+    def _encode(self, value, _dumps=msgpack.packb):
+        return _dumps(value, use_bin_type=True)
+
+    def _decode(self, data, encoding='utf-8', _loads=msgpack.unpackb):
+        return _loads(data, encoding=encoding, use_list=False)
+
+    async def call(self, channel, msg):
+        envelope = {
+            "from": self.uuid,
+            "msg": msg
+        }
+        await self._pub.publish(channel, self.encode(envelope))
         resp = await self.recv()
         if resp['success']:
             return resp['data']
         else:
             raise RemoteException(**resp['exception'])
+
+    async def _recv(self):
+        return self.decode(await super().recv())
+
+    async def response_handler(self, envelope):
+        import pdb
+        pdb.set_trace()
+
+    def bind_call(self, channel, call):
+        """ Associate a callable (function or coro function) with a channel.
+        The channel name can be any string to identify how other callers can
+        reach the callable.  For 1:1 communication the channel should be
+        unique to the entire cluster;  An exercise left to the user. """
+        assert channel not in self._calls
+        if not callable(call):
+            raise TypeError("Uncallable argument: `call`")
+        self.sub.subscribe(channel)
+        self._calls[channel] = call
+
+    def unbind_call(self, channel):
+        call = self._calls.pop(channel)
+        self.sub.unsubscribe(channel, call)
+
+    async def start(self):
+        while not self._stopping:
+            try:
+                call, args, kwargs = await asyncio.wait_for(self.recv(), 0.100,
+                                                            loop=self._loop)
+            except asyncio.TimeoutError:
+                continue
+            resp = {
+                "success": True,
+                "data": None
+            }
+            try:
+                coro = self._calls[call]
+                resp['data'] = await coro(*args, **kwargs)
+            except Exception as e:
+                tb = traceback.format_exc()
+                resp.update({
+                    "success": False,
+                    "exception": {
+                        "type": type(e).__name__,
+                        "message": str(e),
+                        "traceback": tb
+                    }
+                })
+            finally:
+                try:
+                    await self.send(resp)
+                except Exception as e:
+                    logger.exception("Unhandled RPC Error")
+                    await self.send({
+                        "success": False,
+                        "exception": {
+                            "type": "internal",
+                            "message": "rpc error"
+                        }
+                    })
+        self._stopped.set()
+
+    def stop(self):
+        self._stopping = True
+
+    async def wait_stopped(self):
+        await self._stopped.wait()
