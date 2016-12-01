@@ -36,7 +36,7 @@ class Subscriber(socket.NNSocket):
     def start(self):
         """ Start handling published data to our topics. """
         assert not self._stopping
-        self._recv_task = self._loop.create_task(self._router())
+        self._router_task = self._loop.create_task(self._router())
 
     def stop(self):
         if self._stopping:

@@ -33,6 +33,17 @@ static int NNSocket_init(NNSocket *self, PyObject *args, PyObject *kwds) {
     return 0;
 }
 
+static int NNSocket_dealloc(NNSocket *self) {
+    int r = 0;
+    if (self->s && nn_close(self->s)) {
+        PyErr_Format(PyExc_OSError, "nn_close error: %s",
+                     nn_strerror(errno));
+        r = -1;
+    }
+    Py_TYPE(self)->tp_free((PyObject*)self);
+    return r;
+}
+
 static PyObject *NNSocket__nn_bind(NNSocket *self, PyObject *args) {
     const char *addr;
     int eid;
@@ -209,14 +220,26 @@ static PyObject * NNSocket__nn_setsockopt(NNSocket *self, PyObject *args) {
 
 static PyObject * NNSocket__nn_shutdown(NNSocket *self, PyObject *args) {
     int eid;
+    int r;
 
     if (!PyArg_ParseTuple(args, "i:_nn_shutdown", &eid))
         return NULL;
     Py_BEGIN_ALLOW_THREADS
-    eid = nn_shutdown(self->s, eid);
+    r = nn_shutdown(self->s, eid);
     Py_END_ALLOW_THREADS
-    if (eid == -1)
+    if (r == -1)
         return PyErr_Format(PyExc_OSError, "nn_shutdown error: %s",
+                            nn_strerror(errno));
+    Py_RETURN_NONE;
+}
+
+static PyObject * NNSocket__nn_close(NNSocket *self, PyObject *_) {
+    int r;
+    Py_BEGIN_ALLOW_THREADS
+    r = nn_close(self->s);
+    Py_END_ALLOW_THREADS
+    if (r == -1)
+        return PyErr_Format(PyExc_OSError, "nn_close error: %s",
                             nn_strerror(errno));
     Py_RETURN_NONE;
 }
@@ -232,17 +255,15 @@ static PyObject * NNSocket__nn_device(NNSocket *self, PyObject *args) {
 
 static PyMethodDef NNSocket_methods[] = {
     {"_nn_bind", (PyCFunction)NNSocket__nn_bind, METH_VARARGS, NULL},
+    {"_nn_close", (PyCFunction)NNSocket__nn_close, METH_NOARGS, NULL},
     {"_nn_connect", (PyCFunction)NNSocket__nn_connect, METH_VARARGS, NULL},
-    {"_nn_send", (PyCFunction)NNSocket__nn_send, METH_VARARGS, NULL},
-    {"_nn_recv", (PyCFunction)NNSocket__nn_recv, METH_VARARGS, NULL},
-    {"_nn_getsockopt", (PyCFunction)NNSocket__nn_getsockopt, METH_VARARGS,
-     NULL},
-    {"_nn_setsockopt", (PyCFunction)NNSocket__nn_setsockopt, METH_VARARGS,
-     NULL},
-    {"_nn_shutdown", (PyCFunction)NNSocket__nn_shutdown, METH_VARARGS, NULL},
-    {"_nn_get_statistic", (PyCFunction)NNSocket__nn_get_statistic,
-     METH_VARARGS, NULL},
     {"_nn_device", (PyCFunction)NNSocket__nn_device, METH_VARARGS, NULL},
+    {"_nn_get_statistic", (PyCFunction)NNSocket__nn_get_statistic, METH_VARARGS, NULL},
+    {"_nn_getsockopt", (PyCFunction)NNSocket__nn_getsockopt, METH_VARARGS, NULL},
+    {"_nn_recv", (PyCFunction)NNSocket__nn_recv, METH_VARARGS, NULL},
+    {"_nn_send", (PyCFunction)NNSocket__nn_send, METH_VARARGS, NULL},
+    {"_nn_setsockopt", (PyCFunction)NNSocket__nn_setsockopt, METH_VARARGS, NULL},
+    {"_nn_shutdown", (PyCFunction)NNSocket__nn_shutdown, METH_VARARGS, NULL},
     {NULL}
 };
 
@@ -259,6 +280,7 @@ static PyTypeObject NNSocketType = {
     .tp_methods = NNSocket_methods,
     .tp_members = NNSocket_members,
     .tp_init = (initproc) NNSocket_init,
+    .tp_dealloc = (destructor) NNSocket_dealloc,
 };
 
 

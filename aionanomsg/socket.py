@@ -5,7 +5,6 @@ This is probably what you're looking for.
 """
 
 import asyncio
-import warnings
 from . import _nanomsg, symbols
 
 
@@ -25,9 +24,6 @@ class NNSocket(_nanomsg.NNSocket):
         except AttributeError:
             self._create_future = lambda: asyncio.Future(loop=self._loop)
         super().__init__(domain, nn_type)
-
-    def __del__(self):
-        self.shutdown()
 
     @property
     def recv_poll_fd(self):
@@ -54,6 +50,7 @@ class NNSocket(_nanomsg.NNSocket):
     def connect(self, addr):
         eid = self._nn_connect(addr)
         self._eids.append(eid)
+        return eid
 
     def getsockopt(self, level, option):
         assert isinstance(level, symbols.NNSymbol), 'level must be NNSymbol'
@@ -85,17 +82,12 @@ class NNSocket(_nanomsg.NNSocket):
         finally:
             self._receiving = False
 
-    def shutdown(self):
-        """ Tell nanomsg core to shutdown our connections. """
-        while self._eids:
-            try:
-                self._nn_shutdown(self._eids.pop())
-            except Exception as e:
-                warnings.warn("NNSocket shutdown error: %s(%s)" % (
-                              type(e).__name__, e))
+    def shutdown(self, eid):
+        """ Shutdown an endpoint which is sort of like a connection. """
+        self._nn_shutdown(eid)
 
     def close(self):
-        self.shutdown()
+        self._nn_close()
 
     def _recvable_event(self):
         if self._recv_waiter is None:
